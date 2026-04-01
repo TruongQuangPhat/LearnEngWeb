@@ -1,0 +1,433 @@
+// ============================================================
+// LearEngWeb — Prisma Schema
+// Mirrors: supabase/migrations/00001_initial_schema.sql
+// ============================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  extensions = [uuid_ossp(map: "uuid-ossp"), pgvector(map: "vector", schema: "public"), pg_trgm, moddatetime(schema: "extensions")]
+}
+
+// ============================================================
+// ENUMS — mirror PostgreSQL custom types
+// ============================================================
+
+enum ProficiencyLevel {
+  beginner
+  elementary
+  intermediate
+  upper_intermediate
+  advanced
+  mastery
+}
+
+enum ExamType {
+  ielts
+  toeic
+  vstep
+  general
+}
+
+enum PartOfSpeech {
+  noun
+  verb
+  adjective
+  adverb
+  pronoun
+  preposition
+  conjunction
+  interjection
+  determiner
+  other
+}
+
+enum QuestionType {
+  multiple_choice
+  fill_in_blank
+  true_false
+  matching
+  ordering
+  short_answer
+  essay
+  listening_mcq
+  reading_mcq
+}
+
+// ============================================================
+// 1. PROFILES — extends Supabase auth.users (1:1)
+// ============================================================
+
+model Profile {
+  id                   String           @id @db.Uuid
+  username             String?          @unique
+  displayName          String?          @map("display_name")
+  avatarUrl            String?          @map("avatar_url")
+  bio                  String?
+  nativeLanguage       String?          @default("vi") @map("native_language")
+  targetLevel          ProficiencyLevel @default(beginner) @map("target_level")
+  currentLevel         ProficiencyLevel @default(beginner) @map("current_level")
+  targetExam           ExamType         @default(general) @map("target_exam")
+  timezone             String?          @default("Asia/Ho_Chi_Minh")
+  onboardingCompleted  Boolean          @default(false) @map("onboarding_completed")
+  createdAt            DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt            DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  progress             UserProgress?
+  dailyStats           UserDailyStat[]
+  flashcardReviews     UserFlashcardReview[]
+  mockTestAttempts     MockTestAttempt[]
+  roadmapProgress      UserRoadmapProgress[]
+  createdDecks         VocabularyDeck[]     @relation("DeckCreator")
+  createdMockTests     MockTest[]           @relation("MockTestCreator")
+
+  @@map("profiles")
+}
+
+// ============================================================
+// 2. USER PROGRESS — aggregated stats (1:1 with Profile)
+// ============================================================
+
+model UserProgress {
+  id                    String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  userId                String    @unique @map("user_id") @db.Uuid
+  currentStreak         Int       @default(0) @map("current_streak")
+  longestStreak         Int       @default(0) @map("longest_streak")
+  lastActivityDate      DateTime? @map("last_activity_date") @db.Date
+  totalExp              Int       @default(0) @map("total_exp")
+  totalWordsLearned     Int       @default(0) @map("total_words_learned")
+  totalReviews          Int       @default(0) @map("total_reviews")
+  totalStudyTimeMinutes Int       @default(0) @map("total_study_time_minutes")
+  currentLevel          Int       @default(1) @map("current_level")
+  expToNextLevel        Int       @default(100) @map("exp_to_next_level")
+  bestIeltsScore        Decimal?  @map("best_ielts_score") @db.Decimal(3, 1)
+  bestToeicScore        Int?      @map("best_toeic_score")
+  bestVstepScore        Decimal?  @map("best_vstep_score") @db.Decimal(3, 1)
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt             DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relation
+  profile Profile @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([totalExp(sort: Desc)], map: "idx_user_progress_exp")
+  @@index([currentStreak(sort: Desc)], map: "idx_user_progress_streak")
+  @@map("user_progress")
+}
+
+// ============================================================
+// 3. USER DAILY STATS — per-day metrics for Dashboard charts
+// ============================================================
+
+model UserDailyStat {
+  id                String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  userId            String   @map("user_id") @db.Uuid
+  statDate          DateTime @default(dbgenerated("CURRENT_DATE")) @map("stat_date") @db.Date
+  expEarned         Int      @default(0) @map("exp_earned")
+  wordsReviewed     Int      @default(0) @map("words_reviewed")
+  wordsLearned      Int      @default(0) @map("words_learned")
+  studyTimeMinutes  Int      @default(0) @map("study_time_minutes")
+  reviewsCompleted  Int      @default(0) @map("reviews_completed")
+  correctAnswers    Int      @default(0) @map("correct_answers")
+  totalAnswers      Int      @default(0) @map("total_answers")
+  listeningTime     Int?     @default(0) @map("listening_time")
+  speakingTime      Int?     @default(0) @map("speaking_time")
+  readingTime       Int?     @default(0) @map("reading_time")
+  writingTime       Int?     @default(0) @map("writing_time")
+  grammarTime       Int?     @default(0) @map("grammar_time")
+  vocabularyTime    Int?     @default(0) @map("vocabulary_time")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relation
+  profile Profile @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, statDate], map: "idx_user_daily_stats_unique")
+  @@index([userId, statDate(sort: Desc)], map: "idx_user_daily_stats_date")
+  @@map("user_daily_stats")
+}
+
+// ============================================================
+// 4. VOCABULARY DECKS — grouping containers
+// ============================================================
+
+model VocabularyDeck {
+  id            String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  title         String
+  description   String?
+  coverImageUrl String?          @map("cover_image_url")
+  difficulty    ProficiencyLevel @default(beginner)
+  category      String?
+  tags          String[]         @default([])
+  isPublic      Boolean          @default(true) @map("is_public")
+  createdBy     String?          @map("created_by") @db.Uuid
+  wordCount     Int              @default(0) @map("word_count")
+  createdAt     DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  creator Profile?         @relation("DeckCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+  items   VocabularyItem[]
+
+  @@index([category], map: "idx_vocabulary_decks_category")
+  @@index([difficulty], map: "idx_vocabulary_decks_difficulty")
+  @@map("vocabulary_decks")
+}
+
+// ============================================================
+// 5. VOCABULARY ITEMS — individual words/phrases
+// ============================================================
+
+model VocabularyItem {
+  id                String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  deckId            String?          @map("deck_id") @db.Uuid
+  word              String
+  phoneticUs        String?          @map("phonetic_us")
+  phoneticUk        String?          @map("phonetic_uk")
+  audioUsUrl        String?          @map("audio_us_url")
+  audioUkUrl        String?          @map("audio_uk_url")
+  partOfSpeech      PartOfSpeech     @default(other) @map("part_of_speech")
+  definition        String
+  definitionVi      String?          @map("definition_vi")
+  exampleSentence   String?          @map("example_sentence")
+  exampleSentenceVi String?          @map("example_sentence_vi")
+  synonyms          String[]         @default([])
+  antonyms          String[]         @default([])
+  collocations      String[]         @default([])
+  wordFamily        String[]         @default([]) @map("word_family")
+  difficulty        ProficiencyLevel @default(beginner)
+  frequencyRank     Int?             @map("frequency_rank")
+  tags              String[]         @default([])
+  imageUrl          String?          @map("image_url")
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  deck             VocabularyDeck?       @relation(fields: [deckId], references: [id], onDelete: Cascade)
+  flashcardReviews UserFlashcardReview[]
+
+  @@index([word], map: "idx_vocabulary_items_word")
+  @@index([deckId], map: "idx_vocabulary_items_deck")
+  @@index([difficulty], map: "idx_vocabulary_items_difficulty")
+  @@map("vocabulary_items")
+}
+
+// ============================================================
+// 6. USER FLASHCARD REVIEWS — SM-2 SRS state per user×card
+// ============================================================
+
+model UserFlashcardReview {
+  id               String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  userId           String    @map("user_id") @db.Uuid
+  vocabularyItemId String    @map("vocabulary_item_id") @db.Uuid
+  repetitions      Int       @default(0)
+  easinessFactor   Float     @default(2.5) @map("easiness_factor") @db.Real
+  intervalDays     Int       @default(0) @map("interval_days")
+  nextReviewDate   DateTime  @default(dbgenerated("CURRENT_DATE")) @map("next_review_date") @db.Date
+  lastQuality      Int?      @map("last_quality") @db.SmallInt
+  status           String    @default("new")
+  totalReviews     Int       @default(0) @map("total_reviews")
+  correctCount     Int       @default(0) @map("correct_count")
+  incorrectCount   Int       @default(0) @map("incorrect_count")
+  lastReviewedAt   DateTime? @map("last_reviewed_at") @db.Timestamptz
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  profile        Profile        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vocabularyItem VocabularyItem @relation(fields: [vocabularyItemId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, vocabularyItemId])
+  @@index([userId, nextReviewDate], map: "idx_flashcard_reviews_due")
+  @@index([userId, status], map: "idx_flashcard_reviews_status")
+  @@map("user_flashcard_reviews")
+}
+
+// ============================================================
+// 7. MOCK TESTS — test definitions with JSONB structures
+// ============================================================
+
+model MockTest {
+  id               String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  title            String
+  description      String?
+  examType         ExamType         @map("exam_type")
+  difficulty       ProficiencyLevel @default(intermediate)
+  testStructure    Json             @default("{\"sections\": []}") @map("test_structure") @db.JsonB
+  totalQuestions   Int              @default(0) @map("total_questions")
+  totalPoints      Int              @default(0) @map("total_points")
+  timeLimitMinutes Int              @default(60) @map("time_limit_minutes")
+  isPublished      Boolean          @default(false) @map("is_published")
+  tags             String[]         @default([])
+  createdBy        String?          @map("created_by") @db.Uuid
+  createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  creator  Profile?          @relation("MockTestCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+  attempts MockTestAttempt[]
+
+  @@index([examType], map: "idx_mock_tests_exam_type")
+  @@map("mock_tests")
+}
+
+// ============================================================
+// 8. MOCK TEST ATTEMPTS — user responses with JSONB answers
+// ============================================================
+
+model MockTestAttempt {
+  id               String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  userId           String    @map("user_id") @db.Uuid
+  mockTestId       String    @map("mock_test_id") @db.Uuid
+  status           String    @default("in_progress")
+  startedAt        DateTime  @default(now()) @map("started_at") @db.Timestamptz
+  completedAt      DateTime? @map("completed_at") @db.Timestamptz
+  timeSpentSeconds Int       @default(0) @map("time_spent_seconds")
+  userAnswers      Json      @default("{\"sections\": []}") @map("user_answers") @db.JsonB
+  totalScore       Int       @default(0) @map("total_score")
+  totalPossible    Int       @default(0) @map("total_possible")
+  percentage       Decimal   @default(0) @db.Decimal(5, 2)
+  bandScore        Decimal?  @map("band_score") @db.Decimal(3, 1)
+  sectionScores    Json      @default("{}") @map("section_scores") @db.JsonB
+  aiFeedback       Json      @default("{}") @map("ai_feedback") @db.JsonB
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  profile  Profile  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mockTest MockTest @relation(fields: [mockTestId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)], map: "idx_mock_test_attempts_user")
+  @@index([mockTestId], map: "idx_mock_test_attempts_test")
+  @@index([userId, status], map: "idx_mock_test_attempts_status")
+  @@map("mock_test_attempts")
+}
+
+// ============================================================
+// 9. GRAMMAR TOPICS — lesson metadata
+// ============================================================
+
+model GrammarTopic {
+  id          String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  title       String
+  slug        String           @unique
+  description String?
+  difficulty  ProficiencyLevel @default(beginner)
+  category    String?
+  contentMd   String?          @map("content_md")
+  tags        String[]         @default([])
+  sortOrder   Int              @default(0) @map("sort_order")
+  isPublished Boolean          @default(false) @map("is_published")
+  createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  chunks GrammarChunk[]
+
+  @@index([category], map: "idx_grammar_topics_category")
+  @@map("grammar_topics")
+}
+
+// ============================================================
+// 10. GRAMMAR CHUNKS — pgvector embeddings for RAG retrieval
+//
+// NOTE: The `embedding` column uses the `vector(1536)` type from pgvector.
+// Prisma does not natively support the `vector` type, so this column is
+// managed via raw SQL (the migration file). The `Unsupported` type below
+// tells Prisma to acknowledge the column without trying to manage its type.
+// Use `prisma.$queryRaw` to query embeddings with cosine similarity.
+// ============================================================
+
+model GrammarChunk {
+  id         String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  topicId    String   @map("topic_id") @db.Uuid
+  chunkText  String   @map("chunk_text")
+  chunkIndex Int      @map("chunk_index")
+  tokenCount Int?     @map("token_count")
+  metadata   Json     @default("{}") @db.JsonB
+  embedding  Unsupported("vector(1536)")?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relation
+  topic GrammarTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@index([topicId, chunkIndex], map: "idx_grammar_chunks_topic")
+  @@map("grammar_chunks")
+}
+
+// ============================================================
+// 11. LEARNING ROADMAPS — exam preparation paths
+// ============================================================
+
+model LearningRoadmap {
+  id             String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  title          String
+  description    String?
+  examType       ExamType         @map("exam_type")
+  targetLevel    ProficiencyLevel @map("target_level")
+  estimatedWeeks Int              @default(12) @map("estimated_weeks")
+  coverImageUrl  String?          @map("cover_image_url")
+  graphLayout    Json             @default("{}") @map("graph_layout") @db.JsonB
+  isPublished    Boolean          @default(false) @map("is_published")
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  nodes RoadmapNode[]
+
+  @@index([examType], map: "idx_learning_roadmaps_exam")
+  @@map("learning_roadmaps")
+}
+
+// ============================================================
+// 12. ROADMAP NODES — milestones in a learning path
+// ============================================================
+
+model RoadmapNode {
+  id                   String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  roadmapId            String   @map("roadmap_id") @db.Uuid
+  title                String
+  description          String?
+  nodeType             String   @map("node_type")    // 'lesson' | 'quiz' | 'milestone' | 'review'
+  contentType          String?  @map("content_type") // 'grammar' | 'vocabulary' | 'mock_test' | etc.
+  contentId            String?  @map("content_id") @db.Uuid
+  sortOrder            Int      @default(0) @map("sort_order")
+  prerequisiteNodeIds  String[] @default([]) @map("prerequisite_node_ids") @db.Uuid
+  expReward            Int      @default(10) @map("exp_reward")
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  roadmap  LearningRoadmap       @relation(fields: [roadmapId], references: [id], onDelete: Cascade)
+  progress UserRoadmapProgress[]
+
+  @@index([roadmapId, sortOrder], map: "idx_roadmap_nodes_roadmap")
+  @@map("roadmap_nodes")
+}
+
+// ============================================================
+// 13. USER ROADMAP PROGRESS — tracks user completion per node
+// ============================================================
+
+model UserRoadmapProgress {
+  id          String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  roadmapId   String    @map("roadmap_id") @db.Uuid
+  nodeId      String    @map("node_id") @db.Uuid
+  status      String    @default("locked")    // 'locked' | 'available' | 'in_progress' | 'completed'
+  score       Decimal?  @db.Decimal(5, 2)
+  completedAt DateTime? @map("completed_at") @db.Timestamptz
+  attempts    Int       @default(0)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  profile Profile     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  node    RoadmapNode @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, nodeId])
+  @@index([userId, roadmapId], map: "idx_user_roadmap_progress_user")
+  @@map("user_roadmap_progress")
+}
